@@ -15,6 +15,14 @@ from chromadb.types import (
 )
 from chromadb.config import Component, System
 from uuid import UUID
+from enum import Enum
+
+
+class SegmentType(Enum):
+    SQLITE = "urn:chroma:segment/metadata/sqlite"
+    HNSW_LOCAL_MEMORY = "urn:chroma:segment/vector/hnsw-local-memory"
+    HNSW_LOCAL_PERSISTED = "urn:chroma:segment/vector/hnsw-local-persisted"
+    HNSW_DISTRIBUTED = "urn:chroma:segment/vector/hnsw-distributed"
 
 
 class SegmentImplementation(Component):
@@ -38,6 +46,11 @@ class SegmentImplementation(Component):
         return metadata (if any) that is applicable and should be applied to the
         segment. Validation errors will be reported to the user."""
         return None
+
+    @abstractmethod
+    def delete(self) -> None:
+        """Delete the segment and all its data"""
+        ...
 
 
 S = TypeVar("S", bound=SegmentImplementation)

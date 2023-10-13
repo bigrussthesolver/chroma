@@ -8,10 +8,13 @@ from fastapi.routing import APIRoute
 from fastapi import HTTPException, status
 from uuid import UUID
 
-
 import chromadb
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import GetResult, QueryResult
+from chromadb.auth.fastapi import (
+    FastAPIChromaAuthMiddleware,
+    FastAPIChromaAuthMiddlewareWrapper,
+)
 from chromadb.config import Settings
 import chromadb.server
 import chromadb.api
@@ -110,6 +113,12 @@ class FastAPI(chromadb.server.Server):
             allow_origins=settings.chroma_server_cors_allow_origins,
             allow_methods=["*"],
         )
+        if settings.chroma_server_auth_provider:
+            self._auth_middleware = self._api.require(FastAPIChromaAuthMiddleware)
+            self._app.add_middleware(
+                FastAPIChromaAuthMiddlewareWrapper,
+                auth_middleware=self._auth_middleware,
+            )
 
         self.router = ChromaAPIRouter()
 
@@ -117,6 +126,9 @@ class FastAPI(chromadb.server.Server):
         self.router.add_api_route("/api/v1/reset", self.reset, methods=["POST"])
         self.router.add_api_route("/api/v1/version", self.version, methods=["GET"])
         self.router.add_api_route("/api/v1/heartbeat", self.heartbeat, methods=["GET"])
+        self.router.add_api_route(
+            "/api/v1/pre-flight-checks", self.pre_flight_checks, methods=["GET"]
+        )
 
         self.router.add_api_route(
             "/api/v1/collections",
@@ -303,3 +315,8 @@ class FastAPI(chromadb.server.Server):
             include=query.include,
         )
         return nnresult
+
+    def pre_flight_checks(self) -> Dict[str, Any]:
+        return {
+            "max_batch_size": self._api.max_batch_size,
+        }

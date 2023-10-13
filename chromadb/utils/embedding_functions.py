@@ -1,3 +1,5 @@
+import logging
+
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from pathlib import Path
 import os
@@ -7,12 +9,16 @@ from typing import Any, Dict, List, cast
 import numpy as np
 import numpy.typing as npt
 import importlib
+import inspect
+import sys
 from typing import Optional
 
 try:
     from chromadb.is_thin_client import is_thin_client
 except ImportError:
     is_thin_client = False
+
+logger = logging.getLogger(__name__)
 
 
 class SentenceTransformerEmbeddingFunction(EmbeddingFunction):
@@ -39,7 +45,7 @@ class SentenceTransformerEmbeddingFunction(EmbeddingFunction):
         self._normalize_embeddings = normalize_embeddings
 
     def __call__(self, texts: Documents) -> Embeddings:
-        return self._model.encode(
+        return self._model.encode(  # type: ignore
             list(texts),
             convert_to_numpy=True,
             normalize_embeddings=self._normalize_embeddings,
@@ -220,10 +226,10 @@ class InstructorEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, texts: Documents) -> Embeddings:
         if self._instruction is None:
-            return self._model.encode(texts).tolist()
+            return self._model.encode(texts).tolist()  # type: ignore
 
         texts_with_instructions = [[self._instruction, text] for text in texts]
-        return self._model.encode(texts_with_instructions).tolist()
+        return self._model.encode(texts_with_instructions).tolist()  # type: ignore
 
 
 # In order to remove dependencies on sentence-transformers, which in turn depends on
@@ -244,9 +250,20 @@ class ONNXMiniLM_L6_V2(EmbeddingFunction):
 
     # https://github.com/python/mypy/issues/7291 mypy makes you type the constructor if
     # no args
-    def __init__(self) -> None:
+    def __init__(self, preferred_providers: Optional[List[str]] = None) -> None:
         # Import dependencies on demand to mirror other embedding functions. This
         # breaks typechecking, thus the ignores.
+        # convert the list to set for unique values
+        if preferred_providers and not all(
+            [isinstance(i, str) for i in preferred_providers]
+        ):
+            raise ValueError("Preferred providers must be a list of strings")
+        # check for duplicate providers
+        if preferred_providers and len(preferred_providers) != len(
+            set(preferred_providers)
+        ):
+            raise ValueError("Preferred providers must be unique")
+        self._preferred_providers = preferred_providers
         try:
             # Equivalent to import onnxruntime
             self.ort = importlib.import_module("onnxruntime")
@@ -287,12 +304,12 @@ class ONNXMiniLM_L6_V2(EmbeddingFunction):
 
     # Use pytorches default epsilon for division by zero
     # https://pytorch.org/docs/stable/generated/torch.nn.functional.normalize.html
-    def _normalize(self, v: npt.NDArray) -> npt.NDArray:
+    def _normalize(self, v: npt.NDArray) -> npt.NDArray:  # type: ignore
         norm = np.linalg.norm(v, axis=1)
         norm[norm == 0] = 1e-12
-        return v / norm[:, np.newaxis]
+        return v / norm[:, np.newaxis]  # type: ignore
 
-    def _forward(self, documents: List[str], batch_size: int = 32) -> npt.NDArray:
+    def _forward(self, documents: List[str], batch_size: int = 32) -> npt.NDArray:  # type: ignore
         # We need to cast to the correct type because the type checker doesn't know that init_model_and_tokenizer will set the values
         self.tokenizer = cast(self.Tokenizer, self.tokenizer)  # type: ignore
         self.model = cast(self.ort.InferenceSession, self.model)  # type: ignore
@@ -334,10 +351,27 @@ class ONNXMiniLM_L6_V2(EmbeddingFunction):
             # https://github.com/UKPLab/sentence-transformers/blob/3e1929fddef16df94f8bc6e3b10598a98f46e62d/docs/_static/html/models_en_sentence_embeddings.html#LL480
             self.tokenizer.enable_truncation(max_length=256)
             self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=256)
+
+            if self._preferred_providers is None or len(self._preferred_providers) == 0:
+                if len(self.ort.get_available_providers()) > 0:
+                    logger.debug(
+                        f"WARNING: No ONNX providers provided, defaulting to available providers: "
+                        f"{self.ort.get_available_providers()}"
+                    )
+                self._preferred_providers = self.ort.get_available_providers()
+            elif not set(self._preferred_providers).issubset(
+                set(self.ort.get_available_providers())
+            ):
+                raise ValueError(
+                    f"Preferred providers must be subset of available providers: {self.ort.get_available_providers()}"
+                )
             self.model = self.ort.InferenceSession(
                 os.path.join(
                     self.DOWNLOAD_PATH, self.EXTRACTED_FOLDER_NAME, "model.onnx"
-                )
+                ),
+                # Since 1.9 onnyx runtime requires providers to be specified when there are multiple available - https://onnxruntime.ai/docs/api/python/api_summary.html
+                # This is probably not ideal but will improve DX as no exceptions will be raised in multi-provider envs
+                providers=self._preferred_providers,
             )
 
     def __call__(self, texts: Documents) -> Embeddings:
@@ -443,3 +477,15 @@ class GoogleVertexEmbeddingFunction(EmbeddingFunction):
                 embeddings.append(response["predictions"]["embeddings"]["values"])
 
         return embeddings
+
+
+# List of all classes in this module
+_classes = [
+    name
+    for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
+    if obj.__module__ == __name__
+]
+
+
+def get_builtins() -> List[str]:
+    return _classes

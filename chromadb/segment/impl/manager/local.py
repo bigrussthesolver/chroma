@@ -3,13 +3,13 @@ from chromadb.segment import (
     SegmentImplementation,
     SegmentManager,
     MetadataReader,
+    SegmentType,
     VectorReader,
     S,
 )
 from chromadb.config import System, get_class
 from chromadb.db.system import SysDB
 from overrides import override
-from enum import Enum
 from chromadb.segment.impl.vector.local_persistent_hnsw import (
     PersistentLocalHnswSegment,
 )
@@ -25,12 +25,6 @@ if platform.system() != "Windows":
     import resource
 elif platform.system() == "Windows":
     import ctypes
-
-
-class SegmentType(Enum):
-    SQLITE = "urn:chroma:segment/metadata/sqlite"
-    HNSW_LOCAL_MEMORY = "urn:chroma:segment/vector/hnsw-local-memory"
-    HNSW_LOCAL_PERSISTED = "urn:chroma:segment/vector/hnsw-local-persisted"
 
 
 SEGMENT_TYPE_IMPLS = {
@@ -62,6 +56,8 @@ class LocalSegmentManager(SegmentManager):
         self._segment_cache = defaultdict(dict)
         self._lock = Lock()
 
+        # TODO: prototyping with distributed segment for now, but this should be a configurable option
+        # we need to think about how to handle this configuration
         if self._system.settings.require("is_persistent"):
             self._vector_segment_type = SegmentType.HNSW_LOCAL_PERSISTED
             if platform.system() != "Windows":
@@ -112,6 +108,9 @@ class LocalSegmentManager(SegmentManager):
         segments = self._sysdb.get_segments(collection=collection_id)
         for segment in segments:
             if segment["id"] in self._instances:
+                if segment["type"] == SegmentType.HNSW_LOCAL_PERSISTED.value:
+                    instance = self.get_segment(collection_id, VectorReader)
+                    instance.delete()
                 del self._instances[segment["id"]]
             if collection_id in self._segment_cache:
                 if segment["scope"] in self._segment_cache[collection_id]:

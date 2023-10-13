@@ -79,6 +79,7 @@ class PersistentLocalHnswSegment(LocalHnswSegment):
     _sync_threshold: int
     _persist_data: PersistentData
     _persist_directory: str
+    _allow_reset: bool
 
     def __init__(self, system: System, segment: Segment):
         super().__init__(system, segment)
@@ -86,7 +87,7 @@ class PersistentLocalHnswSegment(LocalHnswSegment):
         self._params = PersistentHnswParams(segment["metadata"] or {})
         self._batch_size = self._params.batch_size
         self._sync_threshold = self._params.sync_threshold
-
+        self._allow_reset = system.settings.allow_reset
         self._persist_directory = system.settings.require("persist_directory")
         self._curr_batch = Batch()
         self._brute_force_index = None
@@ -206,7 +207,6 @@ class PersistentLocalHnswSegment(LocalHnswSegment):
         """Add a batch of embeddings to the index"""
         if not self._running:
             raise RuntimeError("Cannot add embeddings to stopped component")
-
         with WriteRWLock(self._lock):
             for record in records:
                 if record["embedding"] is not None:
@@ -224,11 +224,13 @@ class PersistentLocalHnswSegment(LocalHnswSegment):
                 exists_in_index = self._id_to_label.get(
                     id, None
                 ) is not None or self._brute_force_index.has_id(id)
+                exists_in_bf_index = self._brute_force_index.has_id(id)
 
                 if op == Operation.DELETE:
                     if exists_in_index:
                         self._curr_batch.apply(record)
-                        self._brute_force_index.delete([record])
+                        if exists_in_bf_index:
+                            self._brute_force_index.delete([record])
                     else:
                         logger.warning(f"Delete of nonexisting embedding ID: {id}")
 
@@ -395,9 +397,18 @@ class PersistentLocalHnswSegment(LocalHnswSegment):
 
     @override
     def reset_state(self) -> None:
+        if self._allow_reset:
+            data_path = self._get_storage_folder()
+            if os.path.exists(data_path):
+                self.close_persistent_index()
+                shutil.rmtree(data_path, ignore_errors=True)
+
+    @override
+    def delete(self) -> None:
         data_path = self._get_storage_folder()
         if os.path.exists(data_path):
-            shutil.rmtree(data_path, ignore_errors=True)
+            self.close_persistent_index()
+            shutil.rmtree(data_path, ignore_errors=False)
 
     @staticmethod
     def get_file_handle_count() -> int:

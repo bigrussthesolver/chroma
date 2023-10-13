@@ -1,4 +1,4 @@
-from typing import Optional, Union, Sequence, TypeVar, List, Dict, Any
+from typing import Optional, Union, Sequence, TypeVar, List, Dict, Any, Tuple
 from typing_extensions import Literal, TypedDict, Protocol
 import chromadb.errors as errors
 from chromadb.types import (
@@ -207,6 +207,8 @@ def validate_where(where: Where) -> Where:
         if (
             key != "$and"
             and key != "$or"
+            and key != "$in"
+            and key != "$nin"
             and not isinstance(value, (str, int, float, dict))
         ):
             raise ValueError(
@@ -238,15 +240,37 @@ def validate_where(where: Where) -> Where:
                         raise ValueError(
                             f"Expected operand value to be an int or a float for operator {operator}, got {operand}"
                         )
-
-                if operator not in ["$gt", "$gte", "$lt", "$lte", "$ne", "$eq"]:
+                if operator in ["$in", "$nin"]:
+                    if not isinstance(operand, list):
+                        raise ValueError(
+                            f"Expected operand value to be an list for operator {operator}, got {operand}"
+                        )
+                if operator not in [
+                    "$gt",
+                    "$gte",
+                    "$lt",
+                    "$lte",
+                    "$ne",
+                    "$eq",
+                    "$in",
+                    "$nin",
+                ]:
                     raise ValueError(
-                        f"Expected where operator to be one of $gt, $gte, $lt, $lte, $ne, $eq, got {operator}"
+                        f"Expected where operator to be one of $gt, $gte, $lt, $lte, $ne, $eq, $in, $nin, "
+                        f"got {operator}"
                     )
 
-                if not isinstance(operand, (str, int, float)):
+                if not isinstance(operand, (str, int, float, list)):
                     raise ValueError(
-                        f"Expected where operand value to be a str, int, or float, got {operand}"
+                        f"Expected where operand value to be a str, int, float, or list of those type, got {operand}"
+                    )
+                if isinstance(operand, list) and (
+                    len(operand) == 0
+                    or not all(isinstance(x, type(operand[0])) for x in operand)
+                ):
+                    raise ValueError(
+                        f"Expected where operand value to be a non-empty list, and all values to obe of the same type "
+                        f"got {operand}"
                     )
     return where
 
@@ -343,3 +367,13 @@ def validate_embeddings(embeddings: Embeddings) -> Embeddings:
                 f"Expected each value in the embedding to be a int or float, got {embeddings}"
             )
     return embeddings
+
+
+def validate_batch(
+    batch: Tuple[IDs, Optional[Embeddings], Optional[Metadatas], Optional[Documents]],
+    limits: Dict[str, Any],
+) -> None:
+    if len(batch[0]) > limits["max_batch_size"]:
+        raise ValueError(
+            f"Batch size {len(batch[0])} exceeds maximum batch size {limits['max_batch_size']}"
+        )
